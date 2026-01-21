@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Text, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, String, DateTime, Text, ForeignKey, Enum as SQLEnum, Table
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 import enum
@@ -14,6 +14,16 @@ class MessageRole(str, enum.Enum):
     SYSTEM = "system"
 
 
+# Association table for Many-to-Many relationship between ChatSession and Document
+session_documents = Table(
+    "session_documents",
+    Base.metadata,
+    Column("session_id", UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), primary_key=True),
+    Column("document_id", UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True),
+    Column("attached_at", DateTime, default=datetime.utcnow),
+)
+
+
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
@@ -23,11 +33,12 @@ class ChatSession(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     metadata_ = Column("metadata", JSONB, default=dict)
 
-    # Link sessions to documents being discussed
+    # Legacy field - kept for backward compatibility, will be migrated to relationship
     document_ids = Column(ARRAY(UUID(as_uuid=True)), default=list)
 
     # Relationships
     messages = relationship("Message", back_populates="session", cascade="all, delete-orphan", order_by="Message.created_at")
+    documents = relationship("Document", secondary=session_documents, backref="sessions")
 
 
 class Message(Base):

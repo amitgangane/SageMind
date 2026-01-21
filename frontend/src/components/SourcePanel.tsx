@@ -53,42 +53,55 @@ function SourceContent({ source }: { source: SourceChunk }) {
       );
 
     case 'image':
-      // Check if we have image_data from the API (base64 encoded)
-      if (source.image_data) {
-        // Handle both with and without data URL prefix
-        const imageSrc = source.image_data.startsWith('data:')
-          ? source.image_data
-          : `data:image/png;base64,${source.image_data}`;
+      // Check if we have image_url from the API
+      if (source.image_url) {
+        // Build full URL - if relative, prepend backend URL
+        const imageSrc = source.image_url.startsWith('http')
+          ? source.image_url
+          : `http://localhost:8000${source.image_url}`;
 
         return (
           <div className="space-y-3">
             <img
               src={imageSrc}
-              alt={`Figure from page ${source.page_number || 'unknown'}`}
-              className="max-w-full rounded-lg border shadow-sm"
+              alt={source.caption || `Figure from page ${source.page_number || 'unknown'}`}
+              className="max-w-full rounded-lg border shadow-sm bg-white"
               onError={(e) => {
-                // Fallback if image fails to load
-                (e.target as HTMLImageElement).style.display = 'none';
+                // Show fallback if image fails to load
+                const target = e.target as HTMLImageElement;
+                target.style.display = 'none';
+                target.nextElementSibling?.classList.remove('hidden');
               }}
             />
+            {/* Fallback shown on error */}
+            <div className="hidden bg-gray-100 rounded-lg p-4 text-center">
+              <ImageIcon className="w-8 h-8 mx-auto mb-2 text-gray-400" />
+              <p className="text-xs text-gray-500">Failed to load image</p>
+            </div>
+            {/* Caption */}
+            {source.caption && (
+              <p className="text-sm text-gray-700 italic text-center">
+                {source.caption}
+              </p>
+            )}
             <p className="text-xs text-gray-500 text-center">
-              Figure from {source.document_name}, Page {source.page_number || 'N/A'}
+              {source.document_name}, Page {source.page_number || 'N/A'}
             </p>
           </div>
         );
       }
-      // Fallback for image placeholder when no image_data
+      // Fallback for image placeholder when no image_url
       return (
         <div className="bg-gray-100 rounded-lg p-8 text-center border-2 border-dashed border-gray-300">
           <ImageIcon className="w-12 h-12 mx-auto mb-2 text-gray-400" />
           <p className="text-sm text-gray-600 font-medium">
             Image from Page {source.page_number || 'unknown'}
           </p>
+          {source.caption && (
+            <p className="text-xs text-gray-600 mt-2 italic">{source.caption}</p>
+          )}
           <p className="text-xs text-gray-400 mt-1">
-            Image preview not available
-          </p>
-          <p className="text-xs text-gray-400">
-            View the original document to see this image
+            Image file not available
           </p>
         </div>
       );

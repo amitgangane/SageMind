@@ -46,7 +46,8 @@ export interface SourceChunk {
   document_name: string;
   page_number: number | null;
   media_type: MediaType;
-  image_data?: string;  // Base64 encoded image for image chunks
+  image_url?: string;  // URL to image file (e.g., /static/images/...)
+  caption?: string;  // Image caption if available
 }
 
 // A chat message

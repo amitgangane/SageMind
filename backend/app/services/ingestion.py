@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import random
+import io
 
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,10 @@ from app.models.document import Document, Chunk, MediaType
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Static directory for images
+STATIC_DIR = Path(__file__).parent.parent.parent / "static"
+IMAGES_DIR = STATIC_DIR / "images"
 
 
 class EmbeddingService:
@@ -187,15 +192,19 @@ class PDFProcessor:
                 )
         return self._converter
 
-    def process_pdf(self, file_path: str) -> dict:
+    def process_pdf(self, file_path: str, doc_id: str = None) -> dict:
         """
         Process a PDF file and extract text, tables, and images.
+
+        Args:
+            file_path: Path to the PDF file
+            doc_id: Document ID for naming image files
 
         Returns:
             dict with keys:
                 - text_chunks: list of text chunk dicts
                 - tables: list of table dicts (markdown format)
-                - images: list of image dicts (base64 encoded)
+                - images: list of image dicts with image_url
                 - page_count: number of pages
                 - metadata: document metadata
         """
@@ -212,7 +221,7 @@ class PDFProcessor:
         # Extract components
         text_content = self._extract_text(doc)
         tables = self._extract_tables(doc)
-        images = self._extract_images(doc, file_path)
+        images = self._extract_images(doc, file_path, doc_id=doc_id)
 
         # Get page count
         page_count = self._get_page_count(doc)
@@ -280,9 +289,13 @@ class PDFProcessor:
         logger.info(f"Extracted {len(tables)} tables")
         return tables
 
-    def _extract_images(self, doc, file_path: Path) -> list[dict]:
-        """Extract images from the document."""
+    def _extract_images(self, doc, file_path: Path, doc_id: str = None) -> list[dict]:
+        """Extract images from the document and save to static files."""
         images = []
+
+        # Ensure images directory exists
+        IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
         try:
             # Iterate through document items to find pictures/figures
             for item_ix, item in enumerate(doc.iterate_items()):
@@ -291,10 +304,10 @@ class PDFProcessor:
 
                 if 'Picture' in element_type or 'Figure' in element_type:
                     try:
-                        # Try to get image data
-                        image_data = None
                         page_num = None
                         bbox = None
+                        caption = None
+                        image_url = None
 
                         # Get provenance info (page number, bounding box)
                         if hasattr(element, 'prov') and element.prov:
@@ -310,22 +323,36 @@ class PDFProcessor:
                                     } if hasattr(prov.bbox, 'l') else None
                                 break
 
-                        # Try to get image content
-                        if hasattr(element, 'image') and element.image:
-                            if hasattr(element.image, 'pil_image'):
-                                import io
-                                img = element.image.pil_image
-                                buffer = io.BytesIO()
-                                img.save(buffer, format='PNG')
-                                image_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                        # Try to get caption
+                        if hasattr(element, 'caption') and element.caption:
+                            caption = str(element.caption)
+                        elif hasattr(element, 'text') and element.text:
+                            caption = str(element.text)
 
-                        # Store image info even without data (for later extraction)
+                        # Try to get image content and save to file
+                        if hasattr(element, 'image') and element.image:
+                            if hasattr(element.image, 'pil_image') and element.image.pil_image:
+                                img = element.image.pil_image
+
+                                # Generate filename
+                                image_index = len(images)
+                                filename = f"{doc_id}_fig_{image_index}.png"
+                                image_path = IMAGES_DIR / filename
+
+                                # Save image to file
+                                img.save(str(image_path), format='PNG')
+                                image_url = f"/static/images/{filename}"
+
+                                logger.info(f"Saved image to {image_path}")
+
+                        # Store image info
                         images.append({
-                            "data": image_data,
+                            "image_url": image_url,
+                            "caption": caption,
                             "page_number": page_num,
                             "bbox": bbox,
                             "index": len(images),
-                            "has_data": image_data is not None,
+                            "has_image": image_url is not None,
                         })
 
                     except Exception as e:
@@ -376,8 +403,11 @@ class IngestionService:
         logger.info(f"Starting ingestion for document: {document.id}")
 
         try:
-            # Parse the PDF
-            parsed = self.pdf_processor.process_pdf(document.file_path)
+            # Parse the PDF (pass doc_id for naming image files)
+            parsed = self.pdf_processor.process_pdf(
+                document.file_path,
+                doc_id=str(document.id)
+            )
 
             # Update document metadata
             document.page_count = parsed["page_count"]
@@ -407,16 +437,27 @@ class IngestionService:
                     "page_number": table.get("page_number"),
                     "bbox": None,
                     "chunk_index": chunk_index,
-                    "metadata": {"table_index": table.get("index")},
+                    "metadata": {
+                        "table_index": table.get("index"),
+                    },
                 })
                 chunk_index += 1
 
-            # Process images (store reference/placeholder for now)
+            # Process images with saved file URLs
             for image in parsed["images"]:
-                # For images, store metadata and base64 data if available
-                content = f"[Image on page {image.get('page_number', 'unknown')}]"
-                if image.get("data"):
-                    content = f"data:image/png;base64,{image['data'][:100]}..."  # Truncated for display
+                page_num = image.get('page_number', 'unknown')
+                image_index = image.get("index", 0) + 1
+                caption = image.get("caption") or ""
+
+                # Create searchable content - use caption if available
+                if caption:
+                    content = f"[Figure {image_index} on page {page_num}]: {caption}"
+                else:
+                    content = (
+                        f"[Figure {image_index}: Image, diagram, or figure on page {page_num}. "
+                        f"This visual element may contain charts, graphs, architecture diagrams, "
+                        f"flowcharts, illustrations, or other visual content.]"
+                    )
 
                 all_chunks.append({
                     "content": content,
@@ -426,8 +467,9 @@ class IngestionService:
                     "chunk_index": chunk_index,
                     "metadata": {
                         "image_index": image.get("index"),
-                        "has_data": image.get("has_data", False),
-                        "image_data": image.get("data"),  # Store full base64 in metadata
+                        "image_url": image.get("image_url"),  # URL to static file
+                        "caption": caption,
+                        "has_image": image.get("has_image", False),
                     },
                 })
                 chunk_index += 1
@@ -435,9 +477,6 @@ class IngestionService:
             # Generate embeddings for all chunks
             logger.info(f"Generating embeddings for {len(all_chunks)} chunks")
             contents = [c["content"] for c in all_chunks]
-
-            # For images with data, we might want to use a description instead
-            # For now, just embed the placeholder text
             embeddings = self.embedding_service.generate_embeddings(contents)
 
             # Create chunk records

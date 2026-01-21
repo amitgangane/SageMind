@@ -1,5 +1,6 @@
 import uuid
 import shutil
+import hashlib
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -13,6 +14,15 @@ from app.core.config import get_settings
 from app.models.document import Document, Chunk
 from app.schemas.document import DocumentResponse, DocumentWithChunks, ChunkResponse
 from app.services.ingestion import get_ingestion_service
+
+
+def calculate_file_hash(file_path: Path) -> str:
+    """Calculate SHA-256 hash of a file."""
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 settings = get_settings()
@@ -49,6 +59,8 @@ async def upload_document(
     Args:
         file: The PDF file to upload
         process: If True, automatically process the document after upload (default: True)
+
+    Returns existing document if the same file was already uploaded (based on content hash).
     """
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
@@ -60,7 +72,7 @@ async def upload_document(
     upload_path = Path(settings.upload_dir)
     upload_path.mkdir(parents=True, exist_ok=True)
 
-    # Generate unique filename
+    # Save file to a temporary location first to calculate hash
     file_id = uuid.uuid4()
     filename = f"{file_id}.pdf"
     file_path = upload_path / filename
@@ -68,6 +80,17 @@ async def upload_document(
     # Save file
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+
+    # Calculate file hash
+    file_hash = calculate_file_hash(file_path)
+
+    # Check for existing document with same hash
+    existing_doc = db.query(Document).filter(Document.file_hash == file_hash).first()
+    if existing_doc:
+        # Delete the uploaded file since we already have it
+        file_path.unlink()
+        logger.info(f"Document already exists: {existing_doc.id} (hash: {file_hash[:8]}...)")
+        return existing_doc
 
     # Get file size
     file_size = file_path.stat().st_size
@@ -79,6 +102,7 @@ async def upload_document(
         original_filename=file.filename,
         file_path=str(file_path),
         file_size=file_size,
+        file_hash=file_hash,
     )
     db.add(document)
     db.commit()

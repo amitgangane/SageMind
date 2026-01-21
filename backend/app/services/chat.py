@@ -54,6 +54,8 @@ class RetrievedChunk:
         document_name: str,
         page_number: Optional[int] = None,
         media_type: str = "text",
+        image_url: Optional[str] = None,
+        caption: Optional[str] = None,
     ):
         self.chunk_id = chunk_id
         self.content = content
@@ -62,9 +64,11 @@ class RetrievedChunk:
         self.document_name = document_name
         self.page_number = page_number
         self.media_type = media_type
+        self.image_url = image_url
+        self.caption = caption
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "chunk_id": str(self.chunk_id),
             "content": self.content,
             "similarity": self.similarity,
@@ -73,6 +77,11 @@ class RetrievedChunk:
             "page_number": self.page_number,
             "media_type": self.media_type,
         }
+        if self.image_url:
+            result["image_url"] = self.image_url
+        if self.caption:
+            result["caption"] = self.caption
+        return result
 
 
 class ChatService:
@@ -152,6 +161,7 @@ class ChatService:
                 c.document_id,
                 c.page_number,
                 c.media_type,
+                c.metadata as chunk_metadata,
                 d.original_filename as document_name,
                 1 - (c.vector <=> '{embedding_str}'::vector) as similarity
             FROM chunks c
@@ -177,6 +187,14 @@ class ChatService:
 
             chunks = []
             for row in rows:
+                # Extract image_url and caption from metadata if this is an image chunk
+                image_url = None
+                caption = None
+                media_type = row.media_type.value if hasattr(row.media_type, 'value') else str(row.media_type)
+                if media_type == "image" and row.chunk_metadata:
+                    image_url = row.chunk_metadata.get("image_url")
+                    caption = row.chunk_metadata.get("caption")
+
                 chunks.append(RetrievedChunk(
                     chunk_id=row.chunk_id,
                     content=row.content,
@@ -184,7 +202,9 @@ class ChatService:
                     document_id=row.document_id,
                     document_name=row.document_name,
                     page_number=row.page_number,
-                    media_type=row.media_type.value if hasattr(row.media_type, 'value') else str(row.media_type),
+                    media_type=media_type,
+                    image_url=image_url,
+                    caption=caption,
                 ))
 
             logger.info(f"Retrieved {len(chunks)} chunks for query (top similarity: {chunks[0].similarity:.3f})" if chunks else "No chunks retrieved")
@@ -309,6 +329,7 @@ class ChatService:
         session: ChatSession,
         user_message: str,
         db: Session,
+        document_ids: Optional[list[uuid.UUID]] = None,
     ) -> tuple[Message, list[RetrievedChunk]]:
         """
         Process a chat message: retrieve context, generate response, save to DB.
@@ -317,6 +338,7 @@ class ChatService:
             session: The chat session
             user_message: The user's message content
             db: Database session
+            document_ids: Optional list of document IDs to filter retrieval
 
         Returns:
             Tuple of (assistant Message, list of retrieved chunks used)
@@ -336,11 +358,12 @@ class ChatService:
             if msg.id != user_msg.id
         ][-10:]  # Last 10 messages for context
 
-        # Retrieve relevant chunks
+        # Retrieve relevant chunks - use provided document_ids or fall back to session's
+        search_docs = document_ids if document_ids is not None else (session.document_ids if session.document_ids else None)
         retrieved_chunks = self.retrieve_context(
             query=user_message,
             db=db,
-            document_ids=session.document_ids if session.document_ids else None,
+            document_ids=search_docs,
         )
 
         # Generate response with citations

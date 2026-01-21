@@ -1,13 +1,20 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
 from app.api.router import api_router
 from app.db.init_db import init_db
 
 settings = get_settings()
+
+# Ensure static images directory exists
+STATIC_DIR = Path(__file__).parent.parent / "static"
+IMAGES_DIR = STATIC_DIR / "images"
+IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
@@ -33,6 +40,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve static files (images extracted from PDFs)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Include API routes
 app.include_router(api_router)

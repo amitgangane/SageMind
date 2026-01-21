@@ -26,6 +26,7 @@ class Document(Base):
     original_filename = Column(String(255), nullable=False)
     file_path = Column(String(512), nullable=False)
     file_size = Column(Integer, nullable=True)
+    file_hash = Column(String(64), nullable=True, index=True)  # SHA-256 hash for deduplication
     page_count = Column(Integer, nullable=True)
     upload_date = Column(DateTime, default=datetime.utcnow)
     processed = Column(DateTime, nullable=True)
